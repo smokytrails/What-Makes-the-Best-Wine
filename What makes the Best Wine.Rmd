@@ -1,0 +1,261 @@
+---
+title: "What makes the Best Wine?"
+author: "Harshita Nagasubramanian and Vishal Srikanth"
+date: "2024-07-23"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+**Introduction**
+
+_Objective:_
+
+The wine industry in Canada generates about $11.6 billion annually. Unlike other industries in Canada that can operate year-round, wine is restricted to very specific times a year, and within those few months the process of planting, blooming, harvesting and manufacturing have stricter timelines. With that in mind, for the industry to generate billions of dollars annually, the wine must be of superior quality. That begs the question, what contributes to the quality of wine?
+This project aims to predict the quality of wine based on its chemical composition, looking at factors such as, sulfur dioxide, alcohol content, pH, acidity etc. 
+
+_Motivation:_
+
+A recent trip to St.Catherines and the Niagara region entailed a new experience: wine tasting. Although all those little glasses, or "flights" as they call it, look identical, some taste widely different. This got us thinking, what makes wine taste so different? is there a specific combination of these components that produce the best wine? 
+
+**2. Exploratory Data Analysis (EDA)**
+
+_Data Overview:_
+
+The data set "winequality.csv" contains the following attributes:
+
+_Input variables (based on physicochemical tests):_ fixed acidity, volatile acidity, citric acid, residual sugar, chlorides, free sulfur dioxide, total sulfur dioxide, density, pH, sulphates, alcohol
+
+_Output variable (based on sensory data):_ quality (score between 0 and 10)
+
+Summary Statistics and Data Structure:
+```{r, message=FALSE, warning=FALSE, results='hide'}
+library(ggplot2) # libraries
+library(corrgram)
+library(dplyr)
+wine_data <- read.csv("winequality.csv") # dataset
+```
+
+_Correlation Analysis:_
+
+Identify Correlations Between Predictors using a corrgram (gotta love the colorful plot rife with information!):
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+corrgram(wine_data, order=TRUE, lower.panel=panel.shade, upper.panel=panel.cor, text.panel=panel.txt)
+```
+
+The code chunk here groups and summarizes the dataset by free.sulfur.dioxide, preparing it for analysis. High correlations, such as between free and total sulfur dioxide (0.72) or residual sugar and density (0.55), suggest multicollinearity, which can destabilize models and lead to overfitting. To mitigate this, we remove total_sulfur_dioxide, focusing on free_sulfur_dioxide (free is chosen over total as multicollinearity with other variables is less), and using PCA to combine correlated variables like density and alcohol.
+
+```{r, warning=FALSE}
+data_standardized <- scale(wine_data[, c("alcohol", "density")])
+pca_result <- prcomp(data_standardized, center = TRUE, scale. = TRUE)
+wine_data$alcohol_and_density <- pca_result$x[,1]
+transformed_data <- wine_data %>% # grouping by 'free.sulfur.dioxide', and summarizing the data
+  group_by(free.sulfur.dioxide) %>%
+  summarize(across(everything(), mean, na.rm = TRUE))
+```
+
+head(transformed_data) displayed in Appendix A.
+
+_Interaction Analysis:_
+
+Interaction Between Continuous(free.sulfur.dioxide) and Categorical(type) Predictors:
+
+```{r fig.width=5, fig.height=3.5}
+ggplot(wine_data, aes(x = type, y = free.sulfur.dioxide)) +
+  geom_boxplot() +
+  labs(title = "Free Sulfur Dioxide in Type of Wine", x = "Wine Type", y = "Free Sulfur Dioxide")
+```
+
+The boxplot shows that white wines generally have higher levels of free sulfur dioxide compared to red wines, with a wider range of values and more outliers. This suggests that sulfur dioxide levels are more variable in white wines, potentially affecting their preservation and quality differently than red wines.
+
+*Model Fitting*
+
+_Manual Model Fitting:_
+
+Fit a Model by Hand Without Using lm():
+```{r}
+X=as.matrix(cbind(1, wine_data$quality, wine_data$free.sulfur.dioxide, wine_data$alcohol_and_density))
+B=t(X)%*%X
+det(B)
+```
+
+```{r}
+q=as.matrix(wine_data$quality) # data matrix A 
+A=as.matrix(cbind(wine_data$free.sulfur.dioxide,wine_data$quality)) # response vector q
+beta=solve(t(A)%*%A)%*%t(A)%*%q # coefficients using matrix operations
+```
+
+_ESS Test:_
+```{r}
+q_hat <- A %*% beta # predicted values using the manually calculated coefficients
+ess <- sum((q_hat - mean(q))^2) #ESS
+ess
+```
+The manual model fitting process shown here involves calculating the coefficients of a linear regression model without using the built-in lm() function. The matrix X represents the design matrix, including a column of ones for the intercept, and the independent variables, while q represents the response vector, which is the wine quality. By calculating the matrix product B=X t(X) and solving for the coefficients (beta), the model parameters are manually derived. The ESS (Explained Sum of Squares) test was then performed, yielding a value of approximately 4953.686, which represents the sum of the squared differences between the predicted values and the mean of the response variable.
+
+_Model Selection & Transformations:_
+
+Outliers in free.sulfur.dioxide are removed using a threshold based on the IQR, and various models are explored, including linear, quadratic, log-transformed, and Box-Cox transformed models, to predict wine quality. The final model will chosen based on the best fit from these transformations, ensuring a more accurate prediction of quality.
+```{r}
+Q1 <- quantile(transformed_data$free.sulfur.dioxide, 0.25) # calculating the IQR
+Q3 <- quantile(transformed_data$free.sulfur.dioxide, 0.75); IQR <- Q3 - Q1
+upper_threshold <- Q3 + 1.5 * IQR # defining an upper threshold (e.g., 1.5 * IQR)
+wine_data_clean <- transformed_data %>% # filtering out extreme outliers
+  filter(free.sulfur.dioxide <= upper_threshold)
+```
+
+Choosing a Final Model Based on Exploratory Findings:
+
+```{r}
+wine_LM = lm(quality ~ free.sulfur.dioxide, data = wine_data_clean) # linear model
+FIT_LM <- fitted(wine_LM)
+```
+
+```{r}
+wine_data_clean$free.sulfur.dioxide_sq <- wine_data_clean$free.sulfur.dioxide^2 # squared term
+wine_QM <- lm(quality ~ free.sulfur.dioxide + free.sulfur.dioxide_sq, data = wine_data_clean) # quadratic model
+FIT_QM <- fitted(wine_QM)
+```
+
+```{r}
+wine_data_clean$log_quality <- log(wine_data_clean$quality) # log of the quality variable
+wine_log_model <- lm(log_quality ~ free.sulfur.dioxide, data = wine_data_clean) # exp model
+fitted_log_model <- exp(fitted(wine_log_model))
+```
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+library(dplyr); library(MASS)
+BC_result <- boxcox(wine_LM, plot=FALSE) # apply box-cox transformation
+optimal_lambda <- BC_result$x[which.max(BC_result$y)] # optimal value of lambda
+wine_data_clean$BC_quality <- (wine_data_clean$quality^optimal_lambda - 1) / optimal_lambda
+wine_BC_model <- lm(BC_quality ~ free.sulfur.dioxide, data = wine_data_clean)
+fitted_BC_model <- (fitted(wine_BC_model) * optimal_lambda + 1)^(1/optimal_lambda)
+```
+
+*Visualization*
+
+Let's now visualize the different models in the smae plot:
+
+```{r fig.width=5, fig.height=4}
+par(cex=0.6)
+plot(wine_data_clean$free.sulfur.dioxide, wine_data_clean$quality, col = "black",
+     xlab = "Free Sulfur Dioxide", ylab = "Quality", main = "Model Comparisons")
+lines(wine_data_clean$free.sulfur.dioxide, FIT_LM, col = "red", lwd = 2)
+lines(wine_data_clean$free.sulfur.dioxide, FIT_QM, col = "green", lwd = 2)
+lines(wine_data_clean$free.sulfur.dioxide, fitted_log_model, col = "yellow", lwd = 2)
+lines(wine_data_clean$free.sulfur.dioxide, fitted_BC_model, col = "blue", lwd = 2)
+legend("bottomleft", legend = c("Linear Model", "Quadratic Model", "Exponential Model", "Box-Cox Model"),
+       col = c("red", "green", "yellow", "blue"), lwd = 2)
+```
+
+_Model Interpretation:_
+
+Observation of vifs and anova models are in Appendix B. The values found there are used in this interpretation.
+The quadratic model fits best because it has the highest R-squared value (0.1617) and significant p-values for both the linear and quadratic terms, indicating that both contribute to explaining the variability in wine quality. While the quadratic model may slightly overfit for values above 100 ppm of `free.sulfur.dioxide`, it still provides a better fit for smaller values compared to the other models. The linear and log-transformed models have lower R-squared values and less significant coefficients, making them less effective at capturing the relationship between `free.sulfur.dioxide` and wine quality.
+
+**Modelling**
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+library(car); library(dplyr)
+wine_data_cleaner <- na.omit(wine_data)
+Q1 <- quantile(wine_data_cleaner$free.sulfur.dioxide, 0.25) # calculating the IQR
+Q3 <- quantile(wine_data_cleaner$free.sulfur.dioxide, 0.75); IQR <- Q3 - Q1
+upper_threshold <- Q3 + 1.5 * IQR # defining an upper threshold (e.g., 1.5 * IQR)
+wine_data_cleaner <- wine_data_cleaner %>% # filtering out extreme outliers
+  filter(free.sulfur.dioxide <= upper_threshold)
+
+MLR1=lm(quality~free.sulfur.dioxide+alcohol+pH+type+residual.sugar+fixed.acidity+citric.acid,wine_data_cleaner)
+MLR2=lm(quality~free.sulfur.dioxide+alcohol+pH+residual.sugar+citric.acid,wine_data_cleaner)
+MLR3=lm(quality~free.sulfur.dioxide+alcohol+citric.acid,wine_data_cleaner)
+```
+
+Among the three proposed models, MLR1 is preferred because it has the lowest Residual Sum of Squares (RSS = 3798.6), indicating a better fit. Although the difference in RSS between MLR1 and MLR2 is small, the ANOVA test comparing MLR2 and MLR1 shows that the additional variables in MLR1 do not significantly improve the model (F = 1.5086, p = 0.2213), suggesting that the simpler model MLR2 might be sufficient. However, when comparing MLR3 to MLR2, the F-statistic (30.241) and a very low p-value (p < 0.001) indicate that adding pH and residual.sugar significantly improves the model, making MLR2 a strong contender as well. Overall, MLR1 balances complexity and fit, but MLR2 provides a nearly equivalent fit with fewer predictors, making it potentially more efficient.
+
+```{r model_diagnostics}
+final_model <- lm(quality ~ alcohol + sulphates + density + type, data = wine_data)
+par(mfrow = c(2, 2)); plot(final_model)
+```
+
+The diagnostic plots for the final linear model show some deviations from normality in the Q-Q plot and slight heteroscedasticity in the Scale-Location plot, indicating potential issues with the model's assumptions. Additionally, the Residuals vs. Fitted plot suggests some non-linearity, while the Residuals vs. Leverage plot highlights a few potential outliers with high leverage that might disproportionately influence the model.
+
+*Visualization*
+
+```{r}
+MLR4=lm(quality~free.sulfur.dioxide+type,wine_data_cleaner)
+coefficients=coef(MLR4)
+```
+
+```{r fig.width=5, fig.height=4}
+R_Int <- coefficients[1]  # intercept for red wine
+R_Slope <- coefficients[2]  # slope for free.sulfur.dioxide
+W_Int <- coefficients[1] + coefficients[3]  # adjusted intercept for white wine
+W_Slope <- coefficients[2]  # slope remains the same for free.sulfur.dioxide
+par(cex=0.6)
+plot(wine_data_cleaner$free.sulfur.dioxide, wine_data_cleaner$quality, 
+     col = ifelse(wine_data_cleaner$type == "white", "blue", "red"), 
+     pch = ifelse(wine_data_cleaner$type == "white", 1, 16), 
+     xlab = "Free Sulfur Dioxide", ylab = "Quality", 
+     main = "Quality vs Free Sulfur Dioxide by Type")
+abline(R_Int, R_Slope, col = "red", lwd = 2)
+abline(W_Int, W_Slope, col = "blue", lwd = 2)
+legend("topright", legend = c("Red Wine", "White Wine"), 
+       col = c("red", "blue"), lwd = 2, pch = c(16, 1))
+```
+
+The plot shows the relationship between wine quality and free sulfur dioxide for red and white wines, with linear regression lines fitted for each type. The slopes are similar for both, but white wine has a slightly higher intercept, indicating that for the same level of free sulfur dioxide, white wine tends to have a marginally higher quality rating compared to red wine.
+
+**Conclusion**
+
+_Predictor Clarification:_
+
+Why were so so intent on using free.sulfur.dioxide as the main predictor? Refer to Appendix D to follow along our analysis of percentage difference of various attributes of wine quality to find the one that varies the most between red and white wines. Total sulfur dioxide had the highest significance, but the deterrant factor was its intense multicolinearity with other predictors. Residual Sugar came second, but the box plot of continuous vs categorical(type) predictors was not informative or visually appealing. Next in the list was Free sulfur dioxide: the main predictor due to its significant variation between red and white wines. By focusing on free sulfur dioxide, we aimed to capture the critical chemical processes that differentiate wine types and influence quality ratings.
+
+_Summary:_
+
+The analysis reveals that free sulfur dioxide, alcohol, and citric acid are significant predictors of wine quality, with free sulfur dioxide showing a consistent but complex relationship. The quadratic model demonstrated the best fit, indicating a non-linear relationship between these variables and wine quality. Additionally, wine type plays a crucial role, with white wines generally having higher levels of free sulfur dioxide, which correlates with slightly higher quality ratings compared to red wines.
+
+_Limitations:_
+
+Several limitations were encountered during the study. Potential biases arose from the dataset, particularly the uneven sample sizes between red and white wines, which could influence the model's results. The presence of outliers also posed a challenge, affecting the robustness and reliability of the models. Furthermore, the sample size, while adequate for basic analysis, may limit the generalizability of the findings, especially when applying these models to more diverse or complex wine datasets.
+
+_Future Improvements:_
+
+- To enhance future analyses, increasing the sample size and ensuring a more balanced representation of wine types would help mitigate potential biases and improve the robustness of the models. 
+
+- Employing more sophisticated outlier detection and handling methods could further refine the model accuracy. 
+
+- Future studies could also explore the interaction effects between predictors and consider other potential variables that might influence wine quality, such as storage conditions or fermentation methods, to build a more comprehensive predictive model.
+
+- The one question that still remains unanswered is, "Why is it *V*inyard and grape *V*ine, but we say *W*ine and *W*inery?" A deeper study into the etymology would put us all at ease. We want to leave you with one more question: What's your favorite wine?
+
+\pagebreak
+
+*Appendices*
+
+_Appendix A:_
+
+![''](/Users/nrhar/Downloads/ST362 Appendix A.png)
+
+_Appendix B:_
+
+![''](/Users/nrhar/Downloads/ST362 Appendix A part 1.png)
+![''](/Users/nrhar/Downloads/ST362 Appendix B part 2.png)
+![''](/Users/nrhar/Downloads/ST362 Appendix B part 3.png)
+![''](/Users/nrhar/Downloads/ST362 Appendix B part 4.png)
+![''](/Users/nrhar/Downloads/ST362 Appendix B part 5.png)
+
+_Appendix C:_
+
+![''](/Users/nrhar/Downloads/ST362 Appendix C.png)
+
+_Appendix D:_
+
+![''](/Users/nrhar/Downloads/ST362 Appendix D.jpeg)
+
+
+
